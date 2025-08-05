@@ -46,32 +46,191 @@ def get_word_inds(text: str, word_place: int, tokenizer):
             if cur_len >= len(split_text[ptr]):
                 ptr += 1
                 cur_len = 0
+    #print(f"word_place={word_place}, decoded_tokens={words_encode}")
+    print(out)
     return np.array(out)
 
+# def get_replacement_mapper_(x: str, y: str, tokenizer):
+#     """
+#     Splits both input strings x and y into words and constructs a mapping matrix of size max_len x max_len. 
+#     """
+#     """
+#     Constructs a mapping matrix [max_len x max_len] that defines how attention should be
+#     redirected from tokens in x to tokens in y. Handles only 1-to-1 and n-to-n mappings.
+#     """
+#     max_len = tokenizer.model_max_length  # usually 77
+#     words_x = x.split()
+#     words_y = y.split()
+#     #mapper = np.identity((max_len), dtype=np.float32)
+#     mapper = np.zeros((max_len, max_len), dtype=np.float32)
+#     mapper[0][0] = 1.0
+#     last_mapped_row = -1
+#     last_mapped_col = -1
+
+#     for i in range(min(len(words_x), len(words_y))):
+#         inds_x = get_word_inds(x, i, tokenizer)
+#         inds_y = get_word_inds(y, i, tokenizer)
+
+#         # Skip special tokens like BOS/CLS
+#         inds_x = [ix for ix in inds_x if ix > 0]
+#         inds_y = [iy for iy in inds_y if iy > 0]
+
+#         n = len(inds_x)
+#         m = len(inds_y)
+
+#         # Handle only 1-to-1 or n-to-n
+#         # if n == m and n > 0:
+#         #     for j in range(n):
+#         #         mapper[inds_x[j]][inds_y[j]] = 1.0
+
+        
+
+#         if n == 1:
+#             weights = m
+#             for iy in inds_y:
+#                 mapper[inds_x[0]][iy] = 1.0 / weights
+#                 last_mapped_row = max(last_mapped_row, inds_x[0])
+#                 last_mapped_col = max(last_mapped_col, iy)
+
+              
+#         # N-to-1 mapping: multiple tokens in x map to one in y
+#         elif m == 1:
+#             weights = n
+#             for ix in inds_x:
+#                 mapper[ix][inds_y[0]] = 1.0 / weights
+#                 last_mapped_row = max(last_mapped_row, ix)
+#                 last_mapped_col = max(last_mapped_col, inds_y[0])
+
+
+
+#         start_row = last_mapped_row + 1
+#         start_col = last_mapped_col + 1
+
+#         for i in range(start_row, max_len):
+#             if i < len(words_x) and words_x[i] == "<pad>":
+#                 mapper[i][i] = 1.0
+#             if i < len(words_y) and words_y[i] == "<pad>":
+#                 mapper[i][i] = 1.0
+
+
+#         print(mapper[0:15, 0:15])
+
+#     return torch.from_numpy(mapper).to(torch_device, dtype=torch_dtype)
 
 def get_replacement_mapper_(x: str, y: str, tokenizer):
     """
-    Splits both input strings x and y into words and constructs a mapping matrix of size max_len x max_len. 
+    Constructs a mapping matrix [max_len x max_len] that defines how attention 
+    should be redirected from tokens in x to tokens in y. 
+
+    Handles:
+      - 1-to-1
+      - 1-to-N
+      - N-to-1
+      - n-to-n
+
+    Also sets diagonal to 1.0 for <pad> tokens after the main mappings.
     """
-    words_x = x.split(' ')
-    words_y = y.split(' ')   
-    if len(words_x) != len(words_y):
-        raise ValueError(f"attention replacement edit can only be applied on prompts with the same length"
-                         f" but prompt A has {len(words_x)} words and prompt B has {len(words_y)} words."
-                         f" Prompt A: {x}, Prompt B: {y}") 
-    
-    # Get the maximum sequence length from the tokenizer
-    max_len = tokenizer.model_max_length
-    mapper = np.zeros((max_len, max_len))
-    
-    ####TODO####
-    
-    # Construct the mapper
-    
-    ####END_TODO####
+    max_len = tokenizer.model_max_length  # usually 77
+    words_x = x.split()
+    words_y = y.split()
+
+    # Initialize the mapper matrix with zeros
+    mapper = np.zeros((max_len, max_len), dtype=np.float32)
+
+    # As an example, you might want the first token (e.g., <BOS> or <CLS>) to map to itself
+    mapper[0][0] = 1.0  
+
+    # Track the highest row/column used for mappings
+    last_mapped_row = -1
+    last_mapped_col = -1
+
+    for i in range(min(len(words_x), len(words_y))):
+        inds_x = get_word_inds(x, i, tokenizer)
+        inds_y = get_word_inds(y, i, tokenizer)
+
+        # Skip special tokens like BOS/CLS by removing index 0
+        inds_x = [ix for ix in inds_x if ix > 0]
+        inds_y = [iy for iy in inds_y if iy > 0]
+
+        n = len(inds_x)  # number of tokens in x for word i
+        m = len(inds_y)  # number of tokens in y for word i
+
+        # --- 1) n == m (n-to-n) or 1-to-1 ---
+        if n == m and n > 0:
+            for j in range(n):
+                mapper[inds_x[j]][inds_y[j]] = 1.0
+            # Update last mapped row/col
+            last_mapped_row = max(last_mapped_row, max(inds_x))
+            last_mapped_col = max(last_mapped_col, max(inds_y))
+
+        # --- 2) 1-to-N mapping ---
+        elif n == 1 and m > 0:
+            weight = 1.0 / m
+            for iy in inds_y:
+                mapper[inds_x[0]][iy] = weight
+            # Update last mapped row/col
+            last_mapped_row = max(last_mapped_row, inds_x[0])
+            last_mapped_col = max(last_mapped_col, max(inds_y))
+
+        # --- 3) N-to-1 mapping ---
+        elif m == 1 and n > 0:
+            weight = 1.0 / n
+            for ix in inds_x:
+                mapper[ix][inds_y[0]] = weight
+            # Update last mapped row/col
+            last_mapped_row = max(last_mapped_row, max(inds_x))
+            last_mapped_col = max(last_mapped_col, inds_y[0])
+        
+        # 4) N-to-M (general case, both > 1)
+        else:
+            # Each cross pair of sub-tokens gets 1/(n*m)
+            weight = 1.0 / max(n,m)
+            for ix_ in inds_x:
+                for iy_ in inds_y:
+                    mapper[ix_][iy_] = weight
+            last_mapped_row = max(last_mapped_row, max(inds_x))
+            last_mapped_col = max(last_mapped_col, max(inds_y))
+
+        # If neither condition is met, you can decide whether to skip, 
+        # raise an error, or handle more complex alignments.
+
+    # After finishing all mappings, fill diagonal for <pad> tokens
+    start_row = last_mapped_row + 1
+    start_col = last_mapped_col + 1
+    num_pad = max_len - max(start_row, start_col)
+    for j in range(num_pad):
+        mapper[start_row + j][start_col + j] = 1.0
+    # Convert to torch tensor if needed
     mapper = torch.from_numpy(mapper).to(torch_device, dtype=torch_dtype)
-    
     return mapper
+
+
+def get_replacement_mapper(prompts, tokenizer):
+    """
+    Given a list of prompts (with the first as the base), returns a stacked PyTorch tensor
+    containing the mapping matrices for each modified prompt relative to the base.
+    Each mapping matrix is of shape [max_len, max_len], where max_len is typically 77.
+    """
+    x_seq = prompts[0]
+    mappers = []
+    for i in range(1, len(prompts)):
+        mapper = get_replacement_mapper_(x_seq, prompts[i], tokenizer)
+        mappers.append(mapper)
+    return torch.stack(mappers)
+
+def get_replacement_mapper(prompts, tokenizer):
+    """
+    Given a list of prompts (with the first as the base), returns a stacked PyTorch tensor
+    containing the mapping matrices for each modified prompt relative to the base.
+    Each mapping matrix is of shape [max_len, max_len], where max_len is typically 77.
+    """
+    x_seq = prompts[0]
+    mappers = []
+    for i in range(1, len(prompts)):
+        mapper = get_replacement_mapper_(x_seq, prompts[i], tokenizer)
+        mappers.append(mapper)
+    return torch.stack(mappers)
+
 
 
 def get_replacement_mapper(prompts, tokenizer):
@@ -225,7 +384,45 @@ class MySharedAttentionSwapper():
                 ####TODO####
                 
                 # Swap attention probabilities for cross attention
-                pass
+                # if attn_replace.shape[-1] <= self.mapper.shape[-1]:
+                #     attn_probs[1:] = torch.einsum("bhtj,bjk->bhtk",
+                #                                   attn_replace,
+                #
+                # print("attn_base", attn_base.shape)
+                # print("mapper",self.mapper.shape)
+                # print("attn_replace",attn_replace.shape)
+                
+                # #self.mapper[:, :attn_replace.shape[-1], :attn_replace.shape[-1]]\
+                # mapper = self.mapper.to(attn_base.dtype)
+                # attn_probs[1:] = torch.einsum(
+                #     "bhj,ajk->abhk",
+                #     attn_base,  # replicate base for each edited prompt
+                #     mapper  # trim mapper
+                # )
+                # Cast both attn_base and self.mapper to float32 before einsum.
+                # Cast both tensors to float32
+
+                # attn_base_f32 = attn_base.to(torch.float32)
+                # mapper_f32 = self.mapper.to(torch.float32)
+                # # Perform the einsum in float32
+                # result_f32 = torch.einsum("bhj,ajk->abhk", attn_base_f32, mapper_f32)
+                # # Cast the result back to attn_base's dtype (BFloat16)
+                # attn_probs[1:] = result_f32.to(attn_base.dtype)
+
+                # Replicate attn_base to add the batch dimension:
+                # attn_base_rep = attn_base.unsqueeze(0).expand(self.mapper.shape[0], -1, -1, -1)
+
+                # # Convert to float32 if necessary:
+                # attn_base_f32 = attn_base_rep.to(torch.float32)
+                # mapper_f32 = self.mapper.to(torch.float32)
+
+                # # Perform the einsum operation in float32:
+                # result_f32 = torch.einsum("bhtj,bjk->bhtk", attn_base_f32, mapper_f32)
+
+                # # Convert the result back to the original dtype:
+                # attn_probs[1:] = result_f32.to(attn_base.dtype)
+                attn_probs[1:] = torch.matmul(attn_base.unsqueeze(0), self.mapper.unsqueeze(1))
+
 
                 ####END_TODO####
             else:
@@ -294,11 +491,15 @@ class MyCrossAttention(nn.Module):
             encoder_hidden_states = self.attn.norm_encoder_hidden_states(encoder_hidden_states)
 
         ####TODO####
-        query = ...
-        key = ...
-        value = ...
+        query = self.attn.to_q(hidden_states)
+        key = self.attn.to_k(encoder_hidden_states)
+        value = self.attn.to_v(encoder_hidden_states)
 
-        attention_probs = ...
+        query = self.attn.head_to_batch_dim(query)
+        key = self.attn.head_to_batch_dim(key)
+        value = self.attn.head_to_batch_dim(value)
+
+        attention_probs = self.attn.get_attention_scores(query, key, attention_mask)
         ####END_TODO####
 
         # -----------------------------------------------------------------------------
@@ -321,8 +522,12 @@ class MyCrossAttention(nn.Module):
         # -----------------------------------------------------------------------------
         
         ####TODO####
-        hidden_states = ...
-
+        hidden_states = torch.bmm(attention_probs, value)
+        hidden_states = self.attn.batch_to_head_dim(hidden_states)
+        hidden_states = self.attn.to_out[0](hidden_states)
+        hidden_states = self.attn.to_out[1](hidden_states)  # dropout
+        hidden_states = (hidden_states / self.attn.rescale_output_factor)
+        #hidden_states = hidden_states + residual
         ####END_TODO####
 
         self.swapper.note_end_of_attention_layer()
@@ -372,7 +577,12 @@ class MyLDMPipeline():
             ####TODO####
             # use the same noise for all entries in the batch
             # Your code here
-            latent = ...
+            latent = torch.randn(
+                (1, channel, height, width),
+                generator=generator,
+                device=torch_device,
+                dtype=torch_dtype,
+            )
             ####END_TODO####
             latents = latent.expand(batch_size, channel, height, width)
         else:
